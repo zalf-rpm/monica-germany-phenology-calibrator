@@ -1,0 +1,9 @@
+  {
+	"cropRotation": [],
+	
+	"CropParameters": {
+		"DEFAULT": ["include-from-file", "monica-parameters/general/crop.json"],
+		"__enable_Photosynthesis_WangEngelTemperatureResponse__": false,
+		"__enable_T_response_leaf_expansion__": false
+	}
+}
