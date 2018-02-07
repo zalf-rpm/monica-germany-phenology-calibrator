@@ -41,7 +41,7 @@ class FuncThread(threading.Thread):
         self._target(*self._args)
 
 
-def prod_cons_calib(custom_crop, server):
+def prod_cons_calib(custom_crop, server, preprocessed_data=None):
 
     setup = {
         "crop": "WW",
@@ -59,10 +59,10 @@ def prod_cons_calib(custom_crop, server):
         "EmergenceFloodingControlOn": False
     }
     
-    producer = Process(target=run_work_producer.run_producer, args=(setup, custom_crop, server["producer"]))
-    consumer = Process(target=run_work_consumer.run_consumer, args=(server["consumer"]))
-    #producer = FuncThread(rwp.run_producer, setup, custom_crop)
-    #consumer = FuncThread(rwc.run_consumer, path_to_grids_output, True)
+    #producer = Process(target=run_work_producer.run_producer, args=(setup, custom_crop, server["producer"], preprocessed_data))
+    #consumer = Process(target=run_work_consumer.run_consumer, args=(server["consumer"]))
+    producer = FuncThread(run_work_producer.run_producer, setup, custom_crop, server["producer"], preprocessed_data)
+    consumer = FuncThread(run_work_consumer.run_consumer, server["consumer"])
     producer.daemon = True
     consumer.daemon = True
     producer.start()
@@ -70,6 +70,17 @@ def prod_cons_calib(custom_crop, server):
     producer.join()
     consumer.join()
 
+    print("producer and consumer joined")
 
+    sim_pheno = defaultdict(list)
+        
+    with open("out/calib_out.csv") as _:
+        reader = csv.reader(_)
+        reader.next()
+        for row in reader:
+            station = row[0]
+            iso_date = row[1]
+            stage = row[2]
+            sim_pheno[station].append((iso_date, int(stage)))
 
-    return year_to_lk_to_value
+    return sim_pheno

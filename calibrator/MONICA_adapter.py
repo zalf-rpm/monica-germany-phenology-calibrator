@@ -9,62 +9,37 @@ import collections
 import threading
 from threading import Thread
 from collections import defaultdict
-from util_calibrator import *
+#from util_calibrator import *
 import random
 import copy
+import monica_germany_utils
 
 from run_producer_consumer import prod_cons_calib
 
 class monica_adapter(object):
-    def __init__(self, custom_crop, server):
+    def __init__(self, custom_crop, server, preprocessed_data=None):
 
-        self.all_years = range(1999, 2013) #both obs and sims available for these years!
         self.sim_id = -1
         self.custom_crop = copy.deepcopy(custom_crop)
         self.species_params = self.custom_crop["cropParams"]["species"]
         self.cultivar_params = self.custom_crop["cropParams"]["cultivar"]
         self.server = server
+        self.preprocessed_data = preprocessed_data
         
         #read observations
-        sim_lk = set()
-        with open("calculate-indices/landkreise_bkrs.csv") as _:
-            reader = csv.reader(_)
-            next(reader, None)
-            for row in reader:
-                sim_lk.add(int(row[0]))
-
-        #data[bkr/lk][year][sim/obs]
-        self.yield_data = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
-        self.obs_lks = set()
-        with open("calculate-indices/official_yields_DE.csv") as _:
-            reader = csv.reader(_)
-            for i in range(7):
-                next(reader, None)
-
-            #3= Winterweizen (WW)
-            for row in reader:
-                if len(row) > 2 and representsInt(row[1]):
-                    lk = int(row[1])
-                    if lk in sim_lk:
-                        year = int(row[0])
-                        if representsfloat(row[3]):
-                            if float(row[3]) == 0.0:
-                                #consider 0 as nodata
-                                continue
-                            self.obs_lks.add(lk)
-                            obs_yield = float(row[3]) * 100 #kg ha-1
-                            self.yield_data[lk][year]["obs"] = obs_yield
+        obs_pheno = monica_germany_utils.read_stations_obspheno("Z:/projects/monica-germany/DWD_stations.csv",
+                                                                "Z:/projects/monica-germany/DWD_1995_2012_obs_phases_WW.csv",
+                                                                custom_crop["CROP_ID"])
         
         #populate observation list
         self.observations = []#for spotpy
 
-        for lk in self.obs_lks:
-            yrs = find_obs_years(id=lk, data=self.yield_data, yr_range=self.all_years)
-            obs = retrieve_data(ids=[lk], years=yrs, data=self.yield_data, obs_sim="obs")
-            self.observations += obs
-
-        #print len(self.observations)
-
+        #order stations and dates within each station (use the same ordering when collecting results)
+        stations = sorted(obs_pheno.keys())
+        for stat in stations:
+            sorted_by_date = sorted(obs_pheno[stat], key=lambda tup: tup[0])
+            for pair in sorted_by_date:
+                self.observations.append(pair[1])
 
     def run(self,args):
         return self._run(*args)
@@ -113,34 +88,14 @@ class monica_adapter(object):
                 self.cultivar_params)
         
         
-        sim_yield_DE = prod_cons_calib(self.custom_crop, self.server)
+        sim_pheno = prod_cons_calib(self.custom_crop, self.server, self.preprocessed_data)
         
-        #####temporary way to populate sim_yield_DE (for testing)
-        #sim_yield_DE = defaultdict(lambda: defaultdict(float))
-        #out_dir = "calculate-indices/test_out/"
-        #random_multiplier = random.uniform(0, 2)
-        #for filename in os.listdir(out_dir):
-        #    if "yield" not in filename:
-        #        continue
-        #    year = int(filename.split("_")[2])
-        #    with open(out_dir + filename) as _:
-        #        reader = csv.reader(_)
-        #        next(reader, None)
-        #        for row in reader:
-        #            lk = int(row[0])
-        #            sim_yield_DE[year][lk] = float(row[1]) * random_multiplier
-
-        for yr in sim_yield_DE:
-            for lk in sim_yield_DE[yr]:
-                self.yield_data[lk][yr]["sim"] = sim_yield_DE[yr][lk]
-        
-        #populate evallist
-        for lk in self.obs_lks:
-            yrs = find_obs_years(id=lk, data=self.yield_data, yr_range=self.all_years)
-            sim = retrieve_data(ids=[lk], years=yrs, data=self.yield_data, obs_sim="sim")
-            #sim = retrieve_data(ids=[lk], years=yrs, data=self.yield_data, obs_sim="obs") #use the observations as sim
-            evallist += sim
-        #print len(evallist)
+        #order sim according to the same criteria applied for self.observations
+        stations = sorted(sim_pheno.keys())
+        for stat in stations:
+            sorted_by_date = sorted(sim_pheno[stat], key=lambda tup: tup[0])
+            for pair in sorted_by_date:
+                evallist.append(pair[1])
 
         return evallist
         

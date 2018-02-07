@@ -1,2 +1,6 @@
 name,position in array,low,high,stepsize,optguess,minbound,maxbound,derived params
-FieldConditionModifier,FALSE,0.5,1.5,0.1,1,0.5,1.5,
+StageTemperatureSum,0,100,180,1,150,100,180,
+StageTemperatureSum,1,200,600,1,290,200,600,
+StageTemperatureSum,2,300,600,1,390,300,600,
+StageTemperatureSum,3,100,250,1,180,100,250,
+StageTemperatureSum,4,300,500,1,430,300,500,

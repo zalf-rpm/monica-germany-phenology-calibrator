@@ -45,11 +45,10 @@ import run_work_consumer
 def main():
 
     config = {
-        "server": "cluster2",
-        "prod-port": "6666",
-        "cons-port": "7777",
-        "nd-port": "5555",
-        "run-ids": "all", #"[9, 10, 11, 12, 13, 14, 15, 16, 25, 26, 27, 28, 29, 30, 31, 32]"
+        "server": "cluster2",#"localhost",
+        "prod-port": "66663",
+        "cons-port": "77773",
+        "nd-port": "5555"        
     }
     if len(sys.argv) > 1:
         for arg in sys.argv[1:]:
@@ -66,29 +65,8 @@ def main():
         residue_params = json.load(_)
 
     #create crop object
-    calibrated_custom_crop = {
-        "is-winter-crop": True,
-        "cropParams": {
-            "species": species_params,
-            "cultivar": {
-                "=": cultivar_params,
-                "StageTemperatureSum": [
-                    [
-                        150, 
-                        584, 
-                        526, 
-                        168, 
-                        389, 
-                        25
-                    ], 
-                    "°C d"
-                ]
-            }
-        },
-        "residueParams": residue_params
-    }
-
-    default_custom_crop = {
+    custom_crop = {
+        "CROP_ID": "WW", 
         "is-winter-crop": True,
         "cropParams": {
             "species": species_params,
@@ -111,17 +89,12 @@ def main():
     }
 
 
-    custom_crop = default_custom_crop #calibrated_custom_crop
+    #custom_crop = default_custom_crop #calibrated_custom_crop
+    preprocessed_data = run_work_producer.preprocess_data()   
 
-    id_best, vals_params = start_calibration(custom_crop=custom_crop, server=server)
-    with open("best_calibrations.csv", "ab") as _:
-        writer = csv.writer(_)
-        row = []
-        row.append(str(run_id))
-        row.append(str(id_best))
-        row.append(str(vals_params))
-        writer.writerow(row)
-                
+    start_calibration(custom_crop=custom_crop, server=server, preprocessed_data=preprocessed_data)    
+
+    print("calibration finished!")     
 
 if __name__ == "__main__":
     main()

@@ -39,6 +39,9 @@ import monica_io
 LOCAL_RUN = False
 
 PATHS = {
+    "stella": {
+        "local-path-to-output-dir": "out/"
+    },
     "berg-lc": {
         "local-path-to-output-dir": "out/"
     },
@@ -209,16 +212,14 @@ def write_row_to_grids(row_col_data, row, ncols, header, path_to_output_dir):
         del row_col_data[row]
 
 
-def run_consumer(server = {"server": None, "port": None, "nd-port": None}):
+def run_consumer(server = {"server": None, "port": None, "nd-port": None}, path_to_output_dir=None):
     "collect data from workers"
 
     config = {
-        "user": "berg-lc",
-        "port": server["port"] if server["port"] else "7777",
+        "user": "stella",
+        "port": server["port"] if server["port"] else "77773",
         "no-data-port": server["nd-port"] if server["nd-port"] else "5555",
-        "server": server["server"] if server["server"] else "cluster3", 
-        "start-row": "0",
-        "end-row": "-1"
+        "server": server["server"] if server["server"] else "localhost"
     }
     if len(sys.argv) > 1:
         for arg in sys.argv[1:]:
@@ -242,7 +243,13 @@ def run_consumer(server = {"server": None, "port": None, "nd-port": None}):
     received_env_count = 1
     context = zmq.Context()
     socket = context.socket(zmq.PULL)
-    socket.connect("tcp://localhost:" + config["no-data-port"])
+    
+    #connect producer and consumer directly
+    prod_cons_socket = context.socket(zmq.PULL)
+    prod_cons_socket.connect("tcp://localhost:" + config["no-data-port"])
+    expected_stats = None
+    expected_stats = prod_cons_socket.recv_json(encoding="latin-1")
+
 
     if LOCAL_RUN:
         socket.connect("tcp://localhost:" + config["port"])
@@ -250,47 +257,13 @@ def run_consumer(server = {"server": None, "port": None, "nd-port": None}):
         socket.connect("tcp://" + config["server"] + ":" + config["port"])
     socket.RCVTIMEO = 1000
     leave = False
-    write_normal_output_files = False
+    write_calibration_output_files = True
+    
 
-    if not write_normal_output_files:  
-        print("loading template for output...")
-        #template_grid = create_template_grid(PATHS[USER]["LOCAL_PATH_TO_ARCHIV"] + "Soil/Carbiocial_Soil_Raster_final.asc", n_rows, n_cols)
-        #datacells_per_row = np.sum(template_grid, axis=1) #.tolist()
-        print("load complete")
-
-        config_received = False
-        while not config_received:
-            try:
-                msg = socket.recv_json()
-                config_received = True
-            except:
-                continue
-            
-        start_row = int(config["start-row"])
-        end_row = int(config["end-row"])    
-        nrows = end_row - start_row + 1 if start_row > 0 and end_row >= start_row else int(msg["nrows"])
-        ncols = int(msg["ncols"])
-        cellsize = int(msg["cellsize"])
-        xllcorner = int(msg["xllcorner"])
-        yllcorner = int(msg["yllcorner"])
-        no_data = int(msg["no-data"])
-
-        header = "ncols\t\t" + str(ncols) + "\n" \
-                 "nrows\t\t" + str(nrows) + "\n" \
-                 "xllcorner\t" + str(xllcorner) + "\n" \
-                 "yllcorner\t" + str(yllcorner) + "\n" \
-                 "cellsize\t" + str(cellsize) + "\n" \
-                 "NODATA_value\t" + str(no_data) + "\n"
-
-        data = {
-            "row-col-data": defaultdict(lambda: defaultdict(list)),
-            "datacell-count": defaultdict(lambda: ncols),
-            "jobs-per-cell-count": defaultdict(lambda: defaultdict(lambda: -1)),
-            "next-row": start_row
-        }
-
-        #debug_file = open("debug.out", "w")
-
+    #for calib out
+    to_write = []
+    header = ["Station", "Date", "Stage"]
+    to_write.append(header)
 
     while not leave:
 
@@ -299,66 +272,38 @@ def run_consumer(server = {"server": None, "port": None, "nd-port": None}):
         except:
             continue
 
-        if result["type"] == "finish":
-            print "received finish message"
-            leave = True
+        if write_calibration_output_files:
 
-        elif not write_normal_output_files:
+            if result.get("type", "") in ["jobs-per-cell", "no-data", "target-grid-metadata"]:
+                print "ignoring", result.get("type", "")
+                continue
+
+            print "received work result ", received_env_count, " customId: ", result.get("customId", "")
+
             custom_id = result["customId"]
-            ci_parts = custom_id.split("|")
-            resolution = int(ci_parts[0])
-            row = int(ci_parts[1])
-            col = int(ci_parts[2])
-            crow = int(ci_parts[3])
-            ccol = int(ci_parts[4])
-            soil_id = int(ci_parts[5])
+            station = custom_id["station_id"]
+            
+            #save expected station and leave when they are all simulated            
+            expected_stats.remove(station)
+            print ("missing stations: " + str(expected_stats))
+            if len(expected_stats) == 0:
+                leave = True
+            
+            
+            for data_ in result.get("data", []):
+                results = data_.get("results", [])
+                orig_spec = data_.get("origSpec", "")
+                output_ids = data_.get("outputIds", [])
+                row = []
+                row.append(str(station))
+                row.append(orig_spec)
+                row.append(str(results[0][0]))
+                to_write.append(row)
+            
 
-            if result.get("type", "") == "jobs-per-cell":
-                debug_msg = "received jobs-per-cell message count: " + str(result["count"]) + " customId: " + result.get("customId", "") \
-                + " next row: " + str(data["next-row"]) + " jobs@col to go: " + str(data["jobs-per-cell-count"][row][col]) + "@" + str(col) \
-                + " cols@row to go: " + str(data["datacell-count"][row]) + "@" + str(row)
-                #print debug_msg
-                #debug_file.write(debug_msg + "\n")
-                data["jobs-per-cell-count"][row][col] += 1 + result["count"]
-                #print "--> jobs@row/col: " + str(data["jobs-per-cell-count"][row][col]) + "@" + str(row) + "/" + str(col)
-            elif result.get("type", "") == "no-data":
-                debug_msg = "received no-data message customId: " + result.get("customId", "") \
-                + " next row: " + str(data["next-row"]) + " jobs@col to go: " + str(data["jobs-per-cell-count"][row][col]) + "@" + str(col) \
-                + " cols@row to go: " + str(data["datacell-count"][row]) + "@" + str(row)
-                #print debug_msg
-                #debug_file.write(debug_msg + "\n")
-                data["row-col-data"][row][col] = -9999
-                data["jobs-per-cell-count"][row][col] = 0
-            elif "data" in result:
-                debug_msg = "received work result " + str(received_env_count) + " customId: " + result.get("customId", "") \
-                + " next row: " + str(data["next-row"]) + " jobs@col to go: " + str(data["jobs-per-cell-count"][row][col]) + "@" + str(col) \
-                + " cols@row to go: " + str(data["datacell-count"][row]) + "@" + str(row) #\
-                #+ " rows unwritten: " + str(data["row-col-data"].keys()) 
-                #print debug_msg
-                #debug_file.write(debug_msg + "\n")
-                data["row-col-data"][row][col].append(create_output(result))
-                data["jobs-per-cell-count"][row][col] -= 1
-
-                received_env_count = received_env_count + 1
-
-            if data["jobs-per-cell-count"][row][col] == 0:
-                data["datacell-count"][row] -= 1
-
-            while data["next-row"] in data["row-col-data"] and data["datacell-count"][data["next-row"]] == 0:
-                write_row_to_grids(data["row-col-data"], data["next-row"], ncols, header, paths["local-path-to-output-dir"])
-                debug_msg = "wrote row: "  + str(data["next-row"]) + " next-row: " + str(data["next-row"]+1) + " rows unwritten: " + str(data["row-col-data"].keys())
-                print debug_msg
-                #debug_file.write(debug_msg + "\n")
-                data["insert-nodata-rows-count"] = 0 # should have written the nodata rows for this period and 
-                
-                data["next-row"] += 1 # move to next row (to be written)
-
-                if leave_after_finished_run and ((end_row < 0 and data["next-row"] > nrows-1) or (end_row >= 0 and data["next-row"] > end_row)): 
-                    print "all results received, exiting"
-                    leave = True
-                    break
-                
-        elif write_normal_output_files:
+            received_env_count = received_env_count + 1
+        
+        else: #normal files
 
             if result.get("type", "") in ["jobs-per-cell", "no-data", "target-grid-metadata"]:
                 print "ignoring", result.get("type", "")
@@ -368,15 +313,11 @@ def run_consumer(server = {"server": None, "port": None, "nd-port": None}):
 
             custom_id = result["customId"]
             ci_parts = custom_id.split("|")
-            resolution = int(ci_parts[0])
-            row = int(ci_parts[1])
-            col = int(ci_parts[2])
-            crow = int(ci_parts[3])
-            ccol = int(ci_parts[4])
-            soil_id = int(ci_parts[5])
+            station = int(ci_parts[0])
+            
             
             #with open("out/out-" + str(i) + ".csv", 'wb') as _:
-            with open("out-normal/out-" + custom_id.replace("|", "_") + ".csv", 'wb') as _:
+            with open("out/out-" + custom_id.replace("|", "_") + ".csv", 'wb') as _:
                 writer = csv.writer(_, delimiter=",")
 
                 for data_ in result.get("data", []):
@@ -398,6 +339,14 @@ def run_consumer(server = {"server": None, "port": None, "nd-port": None}):
                     writer.writerow([])
 
             received_env_count = received_env_count + 1
+    
+    if write_calibration_output_files:
+        print("writing out file for pheno cal...")
+        with open("out/calib_out.csv", "wb") as out_file:
+            writer = csv.writer(out_file)
+            for row in to_write:
+                writer.writerow(row)
+                
 
     print "exiting run_consumer()"
     #debug_file.close()

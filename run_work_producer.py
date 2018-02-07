@@ -43,6 +43,14 @@ import monica_germany_utils
 LOCAL_RUN = False
 
 PATHS = {
+    "stella": {
+        "include-file-base-path": "C:/Users/stella/Documents/GitHub",
+        "path-to-soil-dir": "Z:/data/soil/buek1000/brd/",
+        "path-to-climate-csvs-dir": "Z:/data/climate/dwd/csvs/germany/",
+        "path-to-data-dir": "Z:/data/",
+        "path-to-projects-dir": "Z:/projects/",
+        "archive-path-to-climate-csvs-dir": "/archiv-daten/md/data/climate/dwd/csvs/germany/"
+    },
     "berg-lc": {
         "include-file-base-path": "C:/Users/berg.ZALF-AD/GitHub",
         "path-to-soil-dir": "N:/soil/buek1000/brd/",
@@ -65,46 +73,12 @@ PATHS = {
     }
 }
 
-def run_producer(setup, custom_crop, server = {"server": None, "port": None, "nd-port": None}):
-    "main"
+USER = "stella"
 
-    context = zmq.Context()
-    socket = context.socket(zmq.PUSH)
-    #config_and_no_data_socket = context.socket(zmq.PUSH)
+paths = PATHS[USER]
 
-    config = {
-        "user": "berg-lc",
-        "port": server["port"] if server["port"] else "6666",
-        #"no-data-port": server["nd-port"] if server["nd-port"] else "5555",
-        "server": server["server"] if server["server"] else "cluster3"
-    }
-    if len(sys.argv) > 1:
-        for arg in sys.argv[1:]:
-            k, v = arg.split("=")
-            if k in config:
-                config[k] = v
-
-    paths = PATHS[config["user"]]
-
-    soil_db_con = sqlite3.connect(paths["path-to-data-dir"] + "germany/buek1000.sqlite")
-
-    #config_and_no_data_socket.bind("tcp://*:" + str(config["no-data-port"]))
-
-    if LOCAL_RUN:
-        socket.connect("tcp://localhost:" + str(config["port"]))
-    else:
-        socket.connect("tcp://" + config["server"] + ":" + str(config["port"]))
-
-    with open("sim.json") as _:
-        sim_json = json.load(_)
-
-    with open("site.json") as _:
-        site_json = json.load(_)
-
-    with open("crop.json") as _:
-        crop_json = json.load(_)
-
-
+def preprocess_data():
+    
     def read_header(path_to_ascii_grid_file):
         "read metadata from esri ascii grid file"
         metadata = {}
@@ -151,21 +125,25 @@ def run_producer(setup, custom_crop, server = {"server": None, "port": None, "nd
                 values.append(value)
 
         return NearestNDInterpolator(np.array(points), np.array(values))
-
+    
+    print("reading DEM info...")
     path_to_dem_grid = paths["path-to-data-dir"] + "/germany/dem_1000_gk5.asc"
     dem_metadata, _ = read_header(path_to_dem_grid)
     dem_grid = np.loadtxt(path_to_dem_grid, dtype=int, skiprows=6)
     dem_gk5_interpolate = create_ascii_grid_interpolator(dem_grid, dem_metadata)
     
+    print("reading slope info...")
     path_to_slope_grid = paths["path-to-data-dir"] + "/germany/slope_1000_gk5.asc"
     slope_metadata, _ = read_header(path_to_slope_grid)
     slope_grid = np.loadtxt(path_to_slope_grid, dtype=float, skiprows=6)
     slope_gk5_interpolate = create_ascii_grid_interpolator(slope_grid, slope_metadata)
 
+    print("reading soil info...")
     path_to_soil_grid = paths["path-to-data-dir"] + "/germany/buek1000_1000_gk5.asc"
     soil_meta, _ = read_header(path_to_soil_grid)
     soil_grid = np.loadtxt(path_to_soil_grid, dtype=int, skiprows=6)
     soil_gk5_interpolate = create_ascii_grid_interpolator(soil_grid, soil_meta)
+    
 
     cdict = {}
     def create_climate_gk5_interpolator_from_json_file(path_to_latlon_to_rowcol_file, wgs84, gk5):
@@ -187,7 +165,63 @@ def run_producer(setup, custom_crop, server = {"server": None, "port": None, "nd
                     continue
 
             return NearestNDInterpolator(np.array(points), np.array(values))
+    print("interpolating climate...")
     climate_gk5_interpolate = create_climate_gk5_interpolator_from_json_file(paths["path-to-climate-csvs-dir"] + "../latlon-to-rowcol.json", wgs84, gk5)
+
+    stat_infos = monica_germany_utils.create_rotation_events_gk5(paths["path-to-projects-dir"] + "monica-germany/DWD_stations.csv",
+    paths["path-to-projects-dir"] + "monica-germany/DWD_1995_2012_obs_phases_WW.csv", wgs84, gk5)
+
+    preprocessed_data = {
+        "dem_gk5_interpolate": dem_gk5_interpolate,
+        "slope_gk5_interpolate": slope_gk5_interpolate,
+        "soil_gk5_interpolate": soil_gk5_interpolate,
+        "cdict": cdict,
+        "climate_gk5_interpolate": climate_gk5_interpolate,
+        "stat_infos": stat_infos
+    }
+
+    return preprocessed_data
+
+
+def run_producer(setup, custom_crop, server = {"server": None, "port": None, "nd-port": None}, preprocessed_data=None):
+    "main"
+
+    config = {
+        "user": USER,
+        "port": server["port"] if server["port"] else "66663",
+        "no-data-port": server["nd-port"] if server["nd-port"] else "5555",
+        "server": server["server"] if server["server"] else "localhost"
+    }
+
+    if len(sys.argv) > 1:
+        for arg in sys.argv[1:]:
+            k, v = arg.split("=")
+            if k in config:
+                config[k] = v
+
+    context = zmq.Context()
+    socket = context.socket(zmq.PUSH)
+    prod_cons_socket = context.socket(zmq.PUSH)
+
+    soil_db_con = sqlite3.connect(paths["path-to-data-dir"] + "germany/buek1000.sqlite")
+
+    #connect producer and consumer directly
+    prod_cons_socket.bind("tcp://*:" + str(config["no-data-port"]))
+
+    if LOCAL_RUN:
+        socket.connect("tcp://localhost:" + str(config["port"]))
+    else:
+        socket.connect("tcp://" + config["server"] + ":" + str(config["port"]))
+
+    with open("sim.json") as _:
+        sim_json = json.load(_)
+        sim_json["include-file-base-path"] = paths["include-file-base-path"]
+    
+    with open("site.json") as _:
+        site_json = json.load(_)
+
+    with open("crop.json") as _:
+        crop_json = json.load(_)
 
     def get_value(list_or_value):
         return list_or_value[0] if isinstance(list_or_value, list) else list_or_value
@@ -195,8 +229,28 @@ def run_producer(setup, custom_crop, server = {"server": None, "port": None, "nd
     sent_env_count = 1
     start_time = time.clock()
 
-    stat_infos = monica_germany_utils.create_rotation_events_gk5(paths["path-to-projects-dir"] + "monica-germany/DWD_stations.csv",
-    paths["path-to-projects-dir"] + "monica-germany/DWD_1995_2012_obs_phases_WW.csv", wgs84, gk5, custom_crop)
+    if preprocessed_data == None:
+        preprocessed_data = preprocess_data()    
+    
+    dem_gk5_interpolate = preprocessed_data["dem_gk5_interpolate"]
+    slope_gk5_interpolate = preprocessed_data["slope_gk5_interpolate"]
+    soil_gk5_interpolate = preprocessed_data["soil_gk5_interpolate"]
+    cdict = preprocessed_data["cdict"]
+    climate_gk5_interpolate = preprocessed_data["climate_gk5_interpolate"]
+    stat_infos = preprocessed_data["stat_infos"]
+
+    #put custom crop in place
+    for stat_info in stat_infos:
+        for cm in stat_info["rotation"]:
+            for ws in cm["worksteps"]:
+                if "crop" in ws.keys():
+                    ws["crop"] = custom_crop
+
+    #send stations list to the consumer
+    sim_stats = []
+    for stat_info in stat_infos:
+        sim_stats.append(int(stat_info["station_id"]))
+    prod_cons_socket.send_json(sim_stats)
 
     for stat_info in stat_infos:
 
@@ -211,7 +265,7 @@ def run_producer(setup, custom_crop, server = {"server": None, "port": None, "nd
         })
         env_template["cropRotation"] = stat_info["rotation"]
         env_template["events"] = stat_info["events"]
-
+        
         soil_id = soil_gk5_interpolate(r_gk5, h_gk5)
         if soil_id == -9999:
             continue
@@ -288,26 +342,60 @@ def run_producer(setup, custom_crop, server = {"server": None, "port": None, "nd
         else:
             env_template["pathToClimateCSV"] = paths["archive-path-to-climate-csvs-dir"] + "row-" + str(crow) + "/col-" + str(ccol) + ".csv"
 
-        #print env_template["pathToClimateCSV"]
-
         env_template["customId"] = {
-            "station_id": station_id,
-            "soil_id": soil_id
+            "station_id": int(station_id)
         }
 
         #with open("envs/env-"+str(sent_env_count)+".json", "w") as _: 
         #    _.write(json.dumps(env))
 
         socket.send_json(env_template)
-        #print "sent env ", sent_env_count, " customId: ", env_template["customId"]
+        print "sent env ", sent_env_count, " customId: ", env_template["customId"]
         #exit()
         sent_env_count += 1
 
     stop_time = time.clock()
+
+
 
     print "sending ", (sent_env_count-1), " envs took ", (stop_time - start_time), " seconds"
     #print "ran from ", start, "/", row_cols[start], " to ", end, "/", row_cols[end]
     print "exiting run_producer()"
 
 if __name__ == "__main__":
-    pass #run_producer()
+    setup = {
+        "crop": "WW",
+        "groundwater-level": False,
+        "impenetrable-layer": False,
+        "elevation": True,
+        "latitude": True,
+        "slope": True,
+        "fertilization": False,
+        "NitrogenResponseOn": False,
+        "irrigation": False,
+        "WaterDeficitResponseOn": True,
+        "LeafExtensionModifier": False,
+        "EmergenceMoistureControlOn": False,
+        "EmergenceFloodingControlOn": False
+    }
+
+    #load default params
+    with open("calibrator/default-params/wheat.json") as _:
+        species_params = json.load(_)
+    with open("calibrator/default-params/winter-wheat.json") as _:
+        cultivar_params = json.load(_)
+    with open("calibrator/default-params/wheat-residue.json") as _:
+        residue_params = json.load(_)
+
+    #create crop object
+    custom_crop = {
+        "CROP_ID": "WW", 
+        "is-winter-crop": True,
+        "cropParams": {
+            "species": species_params,
+            "cultivar": cultivar_params
+        },
+        "residueParams": residue_params
+    }
+
+    run_producer(setup, custom_crop)
